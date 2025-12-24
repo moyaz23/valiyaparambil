@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Family Tree</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <style>
+        :root {
+            --bg1: #eaf4ec;
+            --bg2: #d9e9dd;
+            --card: #ffffff;
+            --node-bg: #ecf7ee;
+            --node-stroke: #9cc5a7;
+            --accent: #3b8c5c;
+            --text-dark: #123a26;
+            --muted: #6d8b74;
+            --shadow: rgba(20, 45, 30, 0.08);
+        }
+
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            background: linear-gradient(180deg, var(--bg1), var(--bg2));
+            font-family: Inter, system-ui, sans-serif;
+            color: var(--text-dark);
+            display: flex;
+            gap: 12px;
+            padding: 12px;
+            box-sizing: border-box;
+            width: 100%;
+            height: 100%;
+        }
+
+        .canvas-card {
+            flex: 1;
+            background: var(--card);
+            border-radius: 14px;
+            box-shadow: 0 8px 30px var(--shadow);
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            min-width: 65%;
+            overflow-y: auto;
+        }
+
+        .sidebar {
+            flex: 1;
+            max-width: 600px;
+            background: var(--card);
+            border-radius: 14px;
+            box-shadow: 0 8px 24px var(--shadow);
+            padding: 18px;
+            overflow-y: auto;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        button {
+            background: #fff;
+            border: 1px solid #bcd8c4;
+            padding: 6px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            color: #145c39;
+        }
+
+        .search-input {
+            flex: 1;
+            background: #fff;
+            border: 1px solid #bcd8c4;
+            padding: 6px 10px;
+            border-radius: 8px;
+            outline: none;
+        }
+
+        #svgWrap {
+            flex: 1;
+            border-radius: 10px;
+            overflow: hidden;
+            background: linear-gradient(180deg, #f6faf7, #e3f0e5);
+            border: 1px solid rgba(0, 0, 0, 0.05);
+            position: relative;
+        }
+
+        svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .link-line {
+            stroke: #a7c7af;
+            stroke-width: 2.5;
+            fill: none;
+            stroke-linecap: round;
+        }
+
+        .node-rect {
+            fill: var(--node-bg);
+            stroke: var(--node-stroke);
+            stroke-width: 2;
+            rx: 20;
+            ry: 20;
+            filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.08));
+        }
+
+        .selected .node-rect {
+            stroke: var(--accent);
+            stroke-width: 2.6;
+        }
+
+        .node-name {
+            font-size: 14px;
+            font-weight: 600;
+            fill: #0f2b1c;
+        }
+
+        .node-years {
+            font-size: 11px;
+            fill: var(--muted);
+        }
+        .ancestor .node-rect {
+    stroke: #1f7a4a;
+    stroke-width: 3;
+    fill: #dff3e6;
+}
+
+.ancestor-line {
+    stroke: #1f7a4a;
+    stroke-width: 3.5;
+}
+
+    </style>
+</head>
+
+<body>
+
+    <div class="canvas-card">
+        <div class="controls">
+            <button id="btnReset">Reset</button>
+            <button id="btnZoomIn">+</button>
+            <button id="btnZoomOut">−</button>
+            <input id="searchInput" class="search-input" placeholder="Search name…" />
+            <button id="searchBtn">Search</button>
+        </div>
+
+        <div id="svgWrap">
+            <svg id="svgCanvas">
+                <g id="panZoomGroup"></g>
+            </svg>
+        </div>
+    </div>
+
+    <div class="sidebar">
+        <h2>Person Details</h2>
+        <div id="breadcrumb" style="
+            font-size:13px;
+            color:#2f7c55;
+            margin-bottom:12px;
+            font-weight:500;
+        "></div>
+        <div id="personInfo">
+            <p>No person selected.</p>
+        </div>
+    </div>
+    <script>
+        /* ===============================
+              CONFIG
+        ================================*/
+        const svg = document.getElementById("svgCanvas");
+        const pan = document.getElementById("panZoomGroup");
+        const details = document.getElementById("personInfo");
+
+        const NODE_W = 160;
+        const NODE_H = 60;
+        const GAP_X = 40;     // horizontal spacing improved
+        const GAP_Y = 140;    // vertical spacing improved
+
+        let scale = 1, tx = 0, ty = 0;
+
+        /* APPLY TRANSFORM */
+        function apply() {
+            pan.setAttribute("transform", `translate(${tx},${ty}) scale(${scale})`);
+        }
+
+        /* ===============================
+              PAN
+        ================================*/
+        let dragging = false, last = { x: 0, y: 0 };
+
+        svg.addEventListener("mousedown", e => {
+            if (e.target.closest(".node")) return;
+            dragging = true;
+            last = { x: e.clientX, y: e.clientY };
+            svg.style.cursor = "grabbing";
+        });
+
+        window.addEventListener("mousemove", e => {
+            if (!dragging) return;
+            tx += (e.clientX - last.x);
+            ty += (e.clientY - last.y);
+            last = { x: e.clientX, y: e.clientY };
+            apply();
+        });
+
+        window.addEventListener("mouseup", () => {
+            dragging = false;
+            svg.style.cursor = "default";
+        });
+
+        /* ===============================
+              ZOOM
+        ================================*/
+        svg.addEventListener("wheel", e => {
+            e.preventDefault();
+
+            const rect = svg.getBoundingClientRect();
+            const cx = e.clientX - rect.left;
+            const cy = e.clientY - rect.top;
+
+            const old = scale;
+            const factor = e.deltaY < 0 ? 1.15 : 0.85;
+            scale = Math.min(4, Math.max(0.25, scale * factor));
+
+            tx = (tx - cx) * (scale / old) + cx;
+            ty = (ty - cy) * (scale / old) + cy;
+
+            apply();
+        }, { passive: false });
+
+        /* ===============================
+          BUTTON CONTROLS
+    ================================*/
+            document.getElementById("btnReset").onclick = () => {
+                scale = 1;
+                tx = 0;
+                ty = 0;
+                apply();
+            };
+
+            document.getElementById("btnZoomIn").onclick = () => {
+                scale = Math.min(4, scale * 1.2);
+                apply();
+            };
+
+            document.getElementById("btnZoomOut").onclick = () => {
+                scale = Math.max(0.25, scale * 0.8);
+                apply();
+            };
+
+
+
+        /* ===============================
+              LOAD FAMILY.JSON
+        ================================*/
+        async function load() {
+            try {
+                const r = await fetch("family.json");
+                if (!r.ok) throw 0;
+                return await r.json();
+            } catch (e) {
+                alert("⚠️ Could not load family.json — using fallback sample.");
+                return [
+                    { "id": "p1", "name": "Grandfather A", "fatherId": null, "motherId": null, "spouseIds": ["p2"], "childrenIds": ["p3", "p4"], "birthYear": 1945 },
+                    { "id": "p2", "name": "Grandmother A", "fatherId": null, "motherId": null, "spouseIds": ["p1"], "childrenIds": ["p3", "p4"], "birthYear": 1948 },
+                    { "id": "p3", "name": "Uncle One", "fatherId": "p1", "motherId": "p2", "spouseIds": [], "childrenIds": [], "birthYear": 1972 },
+                    { "id": "p4", "name": "Father", "fatherId": "p1", "motherId": "p2", "spouseIds": ["p5"], "childrenIds": ["p6"], "birthYear": 1975 },
+                    { "id": "p5", "name": "Mother", "fatherId": null, "motherId": null, "spouseIds": ["p4"], "childrenIds": ["p6"], "birthYear": 1978 },
+                    { "id": "p6", "name": "You", "fatherId": "p4", "motherId": "p5", "spouseIds": [], "childrenIds": [], "birthYear": 2005 }
+                ];
+            }
+        }
+        /* ===============================
+       DATA NORMALIZATION (SAFETY)
+    ================================*/
+            function normalizeFamilyData(rawPeople) {
+                const byId = Object.fromEntries(
+                    rawPeople.map(p => [
+                        p.id,
+                        {
+                            ...p,
+                            fatherId: p.fatherId || null,
+                            motherId: p.motherId || null,
+                            spouseIds: p.spouseIds || [],
+                            childrenIds: p.childrenIds || []
+                        }
+                    ])
+                );
+
+                // Fix spouse symmetry
+               // Fix parent → child links (NO DUPLICATES)
+                Object.values(byId).forEach(child => {
+                    if (child.fatherId && byId[child.fatherId]) {
+                        const f = byId[child.fatherId];
+                        if (!f.childrenIds.includes(child.id)) {
+                            f.childrenIds.push(child.id);
+                        }
+                    }
+                    if (child.motherId && byId[child.motherId]) {
+                        const m = byId[child.motherId];
+                        if (!m.childrenIds.includes(child.id)) {
+                            m.childrenIds.push(child.id);
+                        }
+                    }
+                });
+
+                // Remove references to non-existent IDs
+                const validIds = new Set(Object.keys(byId));
+                Object.values(byId).forEach(p => {
+                    p.spouseIds = p.spouseIds.filter(id => validIds.has(id));
+                    p.childrenIds = p.childrenIds.filter(id => validIds.has(id));
+                    if (p.fatherId && !validIds.has(p.fatherId)) p.fatherId = null;
+                    if (p.motherId && !validIds.has(p.motherId)) p.motherId = null;
+                });
+
+                return Object.values(byId);
+            }
+
+        /* ===============================
+              LAYOUT FIX — AUTO CENTER TREE
+        ================================*/
+      function layout(people) {
+            const byId = Object.fromEntries(people.map(p => [p.id, p]));
+
+            // Build children map using childrenIds ONLY
+            const childrenMap = {};
+            people.forEach(p => {
+                childrenMap[p.id] = p.childrenIds || [];
+            });
+
+            // Find roots (no parents)
+            let roots = people.filter(p => !p.fatherId && !p.motherId);
+            if (!roots.length) roots = [people[0]];
+
+            const pos = {};
+            const subtreeWidth = {};
+
+            function measure(id) {
+                const kids = childrenMap[id];
+                if (!kids || !kids.length) {
+                    subtreeWidth[id] = NODE_W;
+                    return NODE_W;
+                }
+
+                let width = 0;
+                kids.forEach(k => {
+                    width += measure(k);
+                });
+
+                const minWidth =
+                    kids.length * NODE_W + (kids.length - 1) * GAP_X;
+
+                subtreeWidth[id] = Math.max(width, minWidth);
+                return subtreeWidth[id];
+            }
+
+            roots.forEach(r => measure(r.id));
+
+            function place(id, x, y) {
+                const width = subtreeWidth[id];
+                pos[id] = { x: x + width / 2 - NODE_W / 2, y };
+
+                const kids = childrenMap[id];
+                if (!kids || !kids.length) return;
+
+                let childX = x;
+                kids.forEach(kid => {
+                    place(kid, childX, y + NODE_H + GAP_Y);
+                    childX += subtreeWidth[kid];
+                });
+            }
+
+            let cursorX = 100;
+            roots.forEach(r => {
+                place(r.id, cursorX, 80);
+                cursorX += subtreeWidth[r.id] + GAP_X;
+            });
+
+            return pos;
+        }
+
+
+        /* ===============================
+              DRAW LINKS
+        ================================*/
+        function drawLinks(people, pos) {
+                const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                pan.appendChild(g);
+
+                const byId = Object.fromEntries(people.map(p => [p.id, p]));
+
+                people.forEach(parent => {
+                    const kids = parent.childrenIds || [];
+                    kids.forEach(childId => {
+                        const a = pos[parent.id];
+                        const b = pos[childId];
+                        if (!a || !b) return;
+
+                        const startX = a.x + NODE_W / 2;
+                        const startY = a.y + NODE_H;
+                        const endX = b.x + NODE_W / 2;
+                        const endY = b.y;
+
+                        const midY = (startY + endY) / 2;
+
+                        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                        path.setAttribute(
+                            "d",
+                            `M ${startX} ${startY}
+                    C ${startX} ${midY},
+                    ${endX} ${midY},
+                    ${endX} ${endY}`
+                        );
+
+                        path.setAttribute("class", "link-line");
+                        g.appendChild(path);
+                    });
+                });
+            }
+        function getAncestors(id, byId) {
+                const ancestors = new Set();
+
+                function walk(person) {
+                    if (!person) return;
+
+                    if (person.fatherId && byId[person.fatherId]) {
+                        ancestors.add(person.fatherId);
+                        walk(byId[person.fatherId]);
+                    }
+                    if (person.motherId && byId[person.motherId]) {
+                        ancestors.add(person.motherId);
+                        walk(byId[person.motherId]);
+                    }
+                }
+
+                walk(byId[id]);
+                return ancestors;
+            }
+
+            function getBreadcrumbPath(id, byId) {
+                    function buildPath(person) {
+                        if (!person) return [];
+
+                        const father = byId[person.fatherId];
+                        const mother = byId[person.motherId];
+
+                        const fatherPath = father ? buildPath(father) : [];
+                        const motherPath = mother ? buildPath(mother) : [];
+
+                        // choose the longer lineage
+                        const chosen = fatherPath.length >= motherPath.length
+                            ? fatherPath
+                            : motherPath;
+
+                        return [...chosen, person.name];
+                    }
+
+                    return buildPath(byId[id]);
+                }
+    function focusOnNodes(ids, pos) {
+        const padding = 80;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+        ids.forEach(id => {
+            const p = pos[id];
+            if (!p) return;
+
+            minX = Math.min(minX, p.x);
+            minY = Math.min(minY, p.y);
+            maxX = Math.max(maxX, p.x + NODE_W);
+            maxY = Math.max(maxY, p.y + NODE_H);
+        });
+
+        const boxW = maxX - minX + padding * 2;
+        const boxH = maxY - minY + padding * 2;
+
+        const rect = svg.getBoundingClientRect();
+        const scaleX = rect.width / boxW;
+        const scaleY = rect.height / boxH;
+
+        scale = Math.min(2.5, Math.max(0.4, Math.min(scaleX, scaleY)));
+
+        tx = rect.width / 2 - (minX + boxW / 2) * scale;
+        ty = rect.height / 2 - (minY + boxH / 2) * scale;
+
+        apply();
+    }
+
+        /* ===============================
+              DRAW NODES
+        ================================*/
+      function selectPerson(id, pos, people, byId) {
+            document.querySelectorAll(".node")
+                .forEach(n => n.classList.remove("selected", "ancestor"));
+
+            const node = document.querySelector(`.node[data-id="${id}"]`);
+            if (node) node.classList.add("selected");
+
+            const p = byId[id];
+            if (!p) return;
+
+            const ancestors = getAncestors(id, byId);
+
+            document.getElementById("breadcrumb").innerHTML =
+                getBreadcrumbPath(id, byId).join(" → ");
+
+            ancestors.forEach(aid => {
+                const anode = document.querySelector(`.node[data-id="${aid}"]`);
+                if (anode) anode.classList.add("ancestor");
+            });
+
+            // 🔥 THIS WILL 100% WORK
+            focusOnNodes([id], pos);
+
+
+            details.innerHTML = `
+        <h3>${p.name}</h3>
+        <p><strong>Father:</strong> ${p.fatherId ? byId[p.fatherId]?.name : "—"}</p>
+        <p><strong>Mother:</strong> ${p.motherId ? byId[p.motherId]?.name : "—"}</p>
+    `;
+        }
+
+
+
+        function drawNodes(people, pos) {
+            const byId = {};
+            people.forEach(p => byId[p.id] = p);
+
+            const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            pan.appendChild(g);
+
+            Object.keys(pos).forEach(id => {
+                const p = byId[id];
+                if (!p) {
+                    console.warn("⚠️ Layout produced unknown id:", id);
+                    return; // 🔥 skip safely
+                }
+
+                const { x, y } = pos[id];
+
+                const node = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                node.setAttribute("data-id", id);
+                node.setAttribute("class", "node");
+                node.dataset.id = id;
+                node.setAttribute("transform", `translate(${x}, ${y})`);
+
+                const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                rect.setAttribute("width", NODE_W);
+                rect.setAttribute("height", NODE_H);
+                rect.setAttribute("class", "node-rect");
+
+                const name = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                name.setAttribute("x", 12);
+                name.setAttribute("y", 22);
+                name.setAttribute("class", "node-name");
+                name.textContent = p.name;
+
+                const years = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                years.setAttribute("x", 12);
+                years.setAttribute("y", 40);
+                years.setAttribute("class", "node-years");
+                years.textContent = p.birthYear ?? "—";
+
+                node.appendChild(rect);
+                node.appendChild(name);
+                node.appendChild(years);
+
+                node.addEventListener("click", e => {
+                    e.stopPropagation();
+                    selectPerson(id, pos, people, byId);
+                });
+
+
+                g.appendChild(node);
+            });
+
+            svg.addEventListener("click", () => {
+                details.innerHTML = "<p>No person selected.</p>";
+                g.querySelectorAll(".node").forEach(n => n.classList.remove("selected"));
+            });
+        }
+
+       /* ===============================
+       SEARCH
+ ================================*/
+        function setupSearch(people, pos) {
+            const searchBtn = document.getElementById("searchBtn");
+            const searchInput = document.getElementById("searchInput");
+
+            searchBtn.onclick = go;
+            searchInput.addEventListener("keydown", e => {
+                if (e.key === "Enter") go();
+            });
+
+            function go() {
+                const q = searchInput.value.trim().toLowerCase();
+                if (!q) return;
+
+                const byId = Object.fromEntries(
+                    people.map(p => [p.id, p])
+                );
+
+                // 1️⃣ Exact match first (highest priority)
+                const exactMatches = people.filter(p =>
+                    p.name.toLowerCase() === q
+                );
+
+                if (exactMatches.length === 1) {
+                    selectPerson(exactMatches[0].id, pos, people, byId);
+                    return;
+                }
+
+                // 2️⃣ Partial match fallback
+                const matches = people.filter(p =>
+                    p.name.toLowerCase().includes(q)
+                );
+
+                if (!matches.length) {
+                    details.innerHTML = "<p>No match found.</p>";
+                    return;
+                }
+
+                // 3️⃣ Single partial match → auto focus
+                if (matches.length === 1) {
+                    selectPerson(matches[0].id, pos, people, byId);
+                    return;
+                }
+
+                // 4️⃣ Multiple matches → chooser list
+                details.innerHTML = `
+        <h3>Multiple matches</h3>
+        <ul>
+            ${matches.map(m => `
+                <li style="cursor:pointer;color:#2f7c55"
+                    data-id="${m.id}">
+                    ${m.name}
+                    (child of ${byId[m.fatherId]?.name ?? "—"}
+                    & ${byId[m.motherId]?.name ?? "—"})
+                </li>
+            `).join("")}
+        </ul>
+    `;
+
+                details.querySelectorAll("li").forEach(li => {
+                    li.onclick = () => {
+                        selectPerson(li.dataset.id, pos, people, byId);
+                    };
+                });
+            }
+        }
+
+        /* ===============================
+              MAIN
+        ================================*/
+        (async function () {
+                const people = normalizeFamilyData(await load());
+                const pos = layout(people);
+            
+                pan.innerHTML = "";
+
+            drawLinks(people, pos);
+            drawNodes(people, pos);
+            setupSearch(people, pos);
+
+            /* 🔥 AUTO-FIT TREE ON LOAD */
+            focusOnNodes(Object.keys(pos), pos);
+
+            apply();
+
+        })();
+    </script>
+    </body>             
+</html> 
